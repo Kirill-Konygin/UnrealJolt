@@ -21,7 +21,7 @@ struct FJoltShapeData
 
 	JPH::EMotionType MotionType;
 
-	JPH::ObjectLayer Layer;
+	FName LayerName;
 
 	float Friction;
 
@@ -32,7 +32,7 @@ struct FJoltShapeData
 		Ar << Component.BinaryData;
 		Ar << Component.WorldTransform;
 		Ar << Component.MotionType;
-		Ar << Component.Layer;
+		Ar << Component.LayerName;
 		Ar << Component.Friction;
 		Ar << Component.Restitution;
 		return Ar;

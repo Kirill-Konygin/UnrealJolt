@@ -3,6 +3,7 @@
 #include "Components/CapsuleComponent.h"
 #include "Components/SphereComponent.h"
 #include "Components/StaticMeshComponent.h"
+#include "Components/SplineMeshComponent.h"
 #include "Components/ShapeComponent.h"
 #include "Containers/Array.h"
 #include "Containers/Map.h"
@@ -20,7 +21,9 @@
 #include "LandscapeSplinesComponent.h"
 #include "Misc/AssertionMacros.h"
 #include "PhysicsEngine/BodySetup.h"
-#include "StaticMeshResources.h"
+#include "Chaos/TriangleMeshImplicitObject.h"
+#include "Chaos/Particles.h"
+#include "Chaos/ImplicitFwd.h"
 #include "Templates/Casts.h"
 #include "UObject/Package.h"
 #include "UObject/SavePackage.h"
@@ -29,6 +32,7 @@
 #endif
 
 DEFINE_LOG_CATEGORY(JoltSubSystemLogs);
+
 
 void UJoltSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
@@ -51,6 +55,8 @@ void UJoltSubsystem::Deinitialize()
 {
 	Super::Deinitialize();
 	UE_LOG(JoltSubSystemLogs, Log, TEXT("Jolt Deinitialize"));
+
+	bIsReady = false;
 
 	for (TPair<uint32, JPH::Body*>& pair : BodyIDBodyMap)
 	{
@@ -124,6 +130,11 @@ uint16 UJoltSubsystem::AddPostPhysicsCallback(const TDelegate<void(float)>& call
 	return JoltWorker->AddPostPhysicsCallback(callback);
 }
 
+void UJoltSubsystem::AddPostInterpolationCallback(const TDelegate<void(float)>& callback)
+{
+	PostInterpolationCallbacks.Add(callback);
+}
+
 void UJoltSubsystem::SetTimeScale(double deltaSeconds)
 {
 	ConfiguredDeltaSeconds = deltaSeconds;
@@ -142,9 +153,7 @@ void UJoltSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 	{
 #if WITH_EDITOR
 		GetAllLandscapeHeights(landscape);
-	#ifdef JOLT_PLUGIN_LANDSCAPE_API_MODIFIED
 		HandleLandscapeMeshes(landscape);
-	#endif
 		if (!CookBodies())
 		{
 			UE_LOG(JoltSubSystemLogs, Error, TEXT("Landscape data package wasn't saved!"));
@@ -171,6 +180,9 @@ void UJoltSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 		JoltSettings->bEnableMultithreading);
 
 	JoltWorker = new FJoltWorker(WorkerOptions);
+
+	bIsReady = true;
+	OnReady.Broadcast();
 }
 
 void UJoltSubsystem::AddAllJoltActors(const UWorld* World)
@@ -244,9 +256,16 @@ void UJoltSubsystem::Tick(float deltaSeconds)
 		Accumulator -= ConfiguredDeltaSeconds;
 	}
 
-	const double alpha = Accumulator / JoltSettings->FixedDeltaTime;
+	const double alpha = Accumulator / ConfiguredDeltaSeconds;
+	PhysicsAlpha_ = alpha;
 
 	InterpolatePhysicsFrame(alpha);
+
+	for (const TDelegate<void(float)>& cb : PostInterpolationCallbacks)
+	{
+		if (cb.IsBound())
+			cb.Execute(deltaSeconds);
+	}
 }
 
 void UJoltSubsystem::StepPhysics(bool bWithCallbacks)
@@ -335,14 +354,18 @@ void UJoltSubsystem::InitPhysicsSystem(
 	// DrawSettings->mDrawShapeWireframe
 #endif
 
-	BroadPhaseLayerInterface = new BPLayerInterfaceImpl;
+	// Build the runtime layer table from UJoltSettings before constructing the filter classes —
+	// they hold a reference to it for their entire lifetime.
+	LayerTable = FJoltLayerTable::BuildFromSettings(*JoltSettings);
+
+	BroadPhaseLayerInterface = new BPLayerInterfaceImpl(LayerTable);
 	// Create class that filters object vs broadphase layers
 	// Note: As this is an interface, PhysicsSystem will take a reference to this so this instance needs to stay alive!
-	ObjectVsBroadphaseLayerFilter = new ObjectVsBroadPhaseLayerFilterImpl;
+	ObjectVsBroadphaseLayerFilter = new ObjectVsBroadPhaseLayerFilterImpl(LayerTable);
 
 	// Create class that filters object vs object layers
 	// Note: As this is an interface, PhysicsSystem will take a reference to this so this instance needs to stay alive!
-	ObjectVsObjectLayerFilter = new ObjectLayerPairFilterImpl;
+	ObjectVsObjectLayerFilter = new ObjectLayerPairFilterImpl(LayerTable);
 
 	MainPhysicsSystem = new JPH::PhysicsSystem;
 
@@ -367,15 +390,15 @@ void UJoltSubsystem::InitPhysicsSystem(
 	UE_LOG(JoltSubSystemLogs, Log, TEXT("Jolt subsystem init complete"));
 }
 
-int64 UJoltSubsystem::AddDynamicBody(AActor* body, const float& friction, const float& restitution, const float& mass)
+int64 UJoltSubsystem::AddDynamicBody(AActor* body, const float& friction, const float& restitution, const float& mass, FName Layer)
 {
 
 	int64 ID = 0;
-	ExtractPhysicsGeometry(body, [body, this, friction, restitution, mass, &ID](const JPH::Shape* shape, const FTransform& RelTransform) {
+	ExtractPhysicsGeometry(body, [body, this, friction, restitution, mass, Layer, &ID](const JPH::Shape* shape, const FTransform& RelTransform) {
 		// Every sub-collider in the actor is passed to this callback function
 		// We're baking this in world space, so apply actor transform to relative
 		const FTransform   FinalXform = body->GetActorTransform();
-		const JPH::BodyID* joltBodyID = AddDynamicBodyCollision(shape, FinalXform, friction, restitution, mass);
+		const JPH::BodyID* joltBodyID = AddDynamicBodyCollision(shape, FinalXform, friction, restitution, mass, Layer);
 		if (joltBodyID != nullptr)
 		{
 			DynamicBodyIDActorMap.Add(joltBodyID, body);
@@ -385,19 +408,18 @@ int64 UJoltSubsystem::AddDynamicBody(AActor* body, const float& friction, const 
 	return ID;
 }
 
-int64 UJoltSubsystem::AddStaticBody(const AActor* Body, const float& Friction, const float& Restitution)
+int64 UJoltSubsystem::AddStaticBody(const AActor* Body, const float& Friction, const float& Restitution, FName Layer)
 {
 	int64 ID = 0;
-	ExtractPhysicsGeometry(Body, [Body, this, Friction, Restitution, &ID](const JPH::Shape* Shape, const FTransform& RelTransform) mutable {
+	ExtractPhysicsGeometry(Body, [Body, this, Friction, Restitution, Layer, &ID](const JPH::Shape* Shape, const FTransform& RelTransform) mutable {
 		// Every sub-collider in the actor is passed to this callback function
 		// We're baking this in world space, so apply actor transform to relative
 		// const FTransform FinalXform = RelTransform * Body->GetActorTransform();
 		const FTransform FinalXform = Body->GetActorTransform();
-		if (const JPH::BodyID* bodyID = AddStaticBodyCollision(Shape, FinalXform, Friction, Restitution))
+		if (const JPH::BodyID* bodyID = AddStaticBodyCollision(Shape, FinalXform, Friction, Restitution, Layer))
 			ID = bodyID->GetIndexAndSequenceNumber();
 	});
 	return ID;
-	// UE_LOG(JoltSubSystemLogs, Log, TEXT("created static body: %d"), ID);
 }
 
 void UJoltSubsystem::ExtractPhysicsGeometry(const AActor* actor, PhysicsGeometryCallback callback)
@@ -427,7 +449,7 @@ void UJoltSubsystem::ExtractPhysicsGeometry(const UStaticMeshComponent* SMC, con
 	{
 
 		case ECollisionTraceFlag::CTF_UseComplexAsSimple:
-			ExtractComplexPhysicsGeometry(actorTransform, Mesh, callback);
+			ExtractComplexPhysicsGeometry(actorTransform, Mesh->GetBodySetup(), Mesh->GetName(), callback);
 			break;
 		default:
 			ExtractPhysicsGeometry(actorTransform, Mesh->GetBodySetup(), callback);
@@ -435,71 +457,92 @@ void UJoltSubsystem::ExtractPhysicsGeometry(const UStaticMeshComponent* SMC, con
 	}
 }
 
-void UJoltSubsystem::ExtractComplexPhysicsGeometry(const FTransform& xformSoFar, UStaticMesh* mesh, PhysicsGeometryCallback callback)
+void UJoltSubsystem::ExtractComplexPhysicsGeometry(const FTransform& xformSoFar, const UBodySetup* bodySetup, const FString& meshName, PhysicsGeometryCallback callback)
 {
-	/* Note that Mesh->ComplexCollisionMesh is WITH_EDITORONLY_DATA so not available at runtime
-	   Looks like we have to access LODForCollision, RenderData->LODResources
-	   So they use a mesh LOD for collision for complex shapes, never drawn usually?*/
-
-	FStaticMeshRenderData* renderData = mesh->GetRenderData();
-	if (!renderData)
+	// Grab the trimesh on UBodySetup
+	if (!bodySetup || bodySetup->TriMeshGeometries.Num() == 0)
 	{
-		UE_LOG(JoltSubSystemLogs, Error, TEXT("Invalid render data. (complex collision extraction)"));
+		UE_LOG(JoltSubSystemLogs, Error, TEXT("No cooked tri-mesh on BodySetup for '%s' — complex collision skipped. Re-cook the asset or set bNeverNeedsCookedCollisionData intentionally."),
+			*meshName);
 		return;
 	}
-	if (renderData->LODResources.Num() == 0)
+
+	const Chaos::FTriangleMeshImplicitObjectPtr& TriMesh = bodySetup->TriMeshGeometries[0];
+	if (!TriMesh.IsValid())
 	{
-		UE_LOG(JoltSubSystemLogs, Error, TEXT("LODResources zero. (complex collision extraction)"));
+		UE_LOG(JoltSubSystemLogs, Error, TEXT("Cooked tri-mesh on BodySetup for '%s' is invalid — complex collision skipped."), *meshName);
 		return;
 	}
-	FStaticMeshLODResources& LODResources = renderData->LODResources[0];
 
-	const FPositionVertexBuffer& VertexBuffer = LODResources.VertexBuffers.PositionVertexBuffer;
+	const FVector scale = xformSoFar.GetScale3D();
 
-	JPH::VertexList vertices;
-	FVector			scale = xformSoFar.GetScale3D();
-
-	for (uint32 i = 0; i < VertexBuffer.GetNumVertices(); i++)
-	{
-		vertices.push_back(JoltHelpers::ToJoltFloat3(
-			FVector3f(VertexBuffer.VertexPosition(i).X * scale.X,
-				VertexBuffer.VertexPosition(i).Y * scale.Y,
-				VertexBuffer.VertexPosition(i).Z * scale.Z)));
-	}
-
+	JPH::VertexList			 vertices;
 	JPH::IndexedTriangleList triangles;
 	JPH::PhysicsMaterialList physicsMaterialList;
-	const FIndexArrayView	 Indices = LODResources.IndexBuffer.GetArrayView();
+	const int				 MaterialIDX = 0;
 
-	/*Only supporting 1 material for the mesh for now*/
-	const int MaterialIDX = 0;
-	for (int32 i = 0; i < Indices.Num(); i += 3)
+	const auto&						  Particles = TriMesh->Particles();
+	const Chaos::FTrimeshIndexBuffer& Elements = TriMesh->Elements();
+	const int32						  NumVerts = Particles.Size();
+	const int32						  NumTris = Elements.GetNumTriangles();
+
+	vertices.reserve(NumVerts);
+	triangles.reserve(NumTris);
+
+	for (int32 i = 0; i < NumVerts; ++i)
 	{
-		uint32 verIdx1 = Indices[i];
-		uint32 verIdx2 = Indices[i + 1];
-		uint32 verIdx3 = Indices[i + 2];
+		const Chaos::TVec3<Chaos::FRealSingle>& P = Particles.GetX(i);
+		vertices.push_back(JoltHelpers::ToJoltFloat3(
+			FVector3f(P[0] * static_cast<float>(scale.X),
+				P[1] * static_cast<float>(scale.Y),
+				P[2] * static_cast<float>(scale.Z))));
+	}
 
-		// Validate indices
-		if (verIdx1 >= vertices.size() || verIdx2 >= vertices.size() || verIdx3 >= vertices.size())
+	auto pushTri = [&](uint32 a, uint32 b, uint32 c) {
+		if (a < static_cast<uint32>(NumVerts) && b < static_cast<uint32>(NumVerts) && c < static_cast<uint32>(NumVerts))
 		{
-			UE_LOG(JoltSubSystemLogs, Error, TEXT("Invalid triangle indices detected!"));
-			continue;
+			triangles.push_back(JPH::IndexedTriangle(a, c, b, MaterialIDX));  // Swap b and c so the triangles face outward
 		}
+		else
+		{
+			UE_LOG(JoltSubSystemLogs, Error, TEXT("Invalid triangle indices in cooked tri-mesh for '%s'!"), *meshName);
+		}
+	};
 
-		triangles.push_back(JPH::IndexedTriangle(verIdx1, verIdx2, verIdx3, MaterialIDX));
-	}
-
-	if (mesh->GetBodySetup())
+	if (Elements.RequiresLargeIndices())
 	{
-		physicsMaterialList.push_back(GetJoltPhysicsMaterial(mesh->GetBodySetup()->GetPhysMaterial()));
+		for (const Chaos::TVec3<int32>& T : Elements.GetLargeIndexBuffer())
+		{
+			pushTri(static_cast<uint32>(T[0]), static_cast<uint32>(T[1]), static_cast<uint32>(T[2]));
+		}
 	}
+	else
+	{
+		for (const Chaos::TVec3<uint16>& T : Elements.GetSmallIndexBuffer())
+		{
+			pushTri(static_cast<uint32>(T[0]), static_cast<uint32>(T[1]), static_cast<uint32>(T[2]));
+		}
+	}
+
+	physicsMaterialList.push_back(GetJoltPhysicsMaterial(bodySetup->GetPhysMaterial()));
+
+	if (vertices.empty() || triangles.empty())
+	{
+		UE_LOG(JoltSubSystemLogs, Error, TEXT("Skipping complex collision for '%s': empty cooked tri-mesh. Verts=%llu Tris=%llu"),
+			*meshName,
+			static_cast<uint64>(vertices.size()),
+			static_cast<uint64>(triangles.size()));
+		return;
+	}
+
 	// TODO: Caching mechanism for MeshShapes
 	JPH::MeshShapeSettings	meshSettings(vertices, triangles, physicsMaterialList);
 	JPH::Shape::ShapeResult res = meshSettings.Create();
 
 	if (!res.IsValid())
 	{
-		UE_LOG(JoltSubSystemLogs, Error, TEXT("Failed to create mesh. Error: %s"), *FString(res.GetError().c_str()));
+		UE_LOG(JoltSubSystemLogs, Error, TEXT("Failed to create mesh for '%s'. Error: %s"), *meshName, *FString(res.GetError().c_str()));
+		return;
 	}
 	callback(res.Get(), xformSoFar);
 }
@@ -811,14 +854,14 @@ const JPH::CapsuleShape* UJoltSubsystem::GetCapsuleCollisionShape(const float& r
 	return capsule;
 }
 
-const JPH::BodyID* UJoltSubsystem::AddDynamicBodyCollision(const JPH::BodyID& bodyID, const JPH::Shape* shape, const FTransform& initialWorldTransform, float friction, float restitution, float mass)
+const JPH::BodyID* UJoltSubsystem::AddDynamicBodyCollision(const JPH::BodyID& bodyID, const JPH::Shape* shape, const FTransform& initialWorldTransform, float friction, float restitution, float mass, FName layerName)
 {
 	JPH::BodyCreationSettings shapeSettings(
 		shape,
 		JoltHelpers::ToJoltPos(initialWorldTransform.GetLocation()),
 		JoltHelpers::ToJoltRot(initialWorldTransform.GetRotation()),
 		JPH::EMotionType::Dynamic,
-		Layers::MOVING);
+		ResolveDynamicLayer(layerName));
 
 	// Override mass, and calculate inerta
 	JPH::MassProperties msp;
@@ -829,14 +872,24 @@ const JPH::BodyID* UJoltSubsystem::AddDynamicBodyCollision(const JPH::BodyID& bo
 	return AddBodyToSimulation(&bodyID, shapeSettings, friction, restitution);
 }
 
-const JPH::BodyID* UJoltSubsystem::AddDynamicBodyCollision(const JPH::Shape* shape, const FTransform& initialWorldTransform, float friction, float restitution, float mass)
+const JPH::BodyID* UJoltSubsystem::AddDynamicBodyForExternalOwner(
+	const JPH::BodyID& bodyID,
+	const JPH::Shape*  shape,
+	const FTransform&  initialWorldTransform,
+	float friction, float restitution, float mass,
+	FName layerName)
+{
+	return AddDynamicBodyCollision(bodyID, shape, initialWorldTransform, friction, restitution, mass, layerName);
+}
+
+const JPH::BodyID* UJoltSubsystem::AddDynamicBodyCollision(const JPH::Shape* shape, const FTransform& initialWorldTransform, float friction, float restitution, float mass, FName layerName)
 {
 	JPH::BodyCreationSettings shapeSettings(
 		shape,
 		JoltHelpers::ToJoltPos(initialWorldTransform.GetLocation()),
 		JoltHelpers::ToJoltRot(initialWorldTransform.GetRotation()),
 		JPH::EMotionType::Dynamic,
-		Layers::MOVING);
+		ResolveDynamicLayer(layerName));
 
 	// Override mass, and calculate inertia
 	JPH::MassProperties msp;
@@ -849,7 +902,7 @@ const JPH::BodyID* UJoltSubsystem::AddDynamicBodyCollision(const JPH::Shape* sha
 	return AddBodyToSimulation(bodyID, shapeSettings, friction, restitution);
 }
 
-const JPH::BodyID* UJoltSubsystem::AddStaticBodyCollision(const JPH::Shape* shape, const FTransform& transform, float friction, float restitution)
+const JPH::BodyID* UJoltSubsystem::AddStaticBodyCollision(const JPH::Shape* shape, const FTransform& transform, float friction, float restitution, FName layerName)
 {
 	check(shape != nullptr);
 	JPH::BodyCreationSettings shapeSettings(
@@ -857,33 +910,33 @@ const JPH::BodyID* UJoltSubsystem::AddStaticBodyCollision(const JPH::Shape* shap
 		JoltHelpers::ToJoltPos(transform.GetLocation()),
 		JoltHelpers::ToJoltRot(transform.GetRotation()),
 		JPH::EMotionType::Static,
-		Layers::NON_MOVING);
+		ResolveStaticLayer(layerName));
 
 	StaticBodyIDX++;
 	JPH::BodyID* bodyID = new JPH::BodyID(StaticBodyIDX);
 	return AddBodyToSimulation(bodyID, shapeSettings, friction, restitution);
 }
 
-const JPH::BodyID* UJoltSubsystem::AddStaticBodyCollision(const JPH::BodyID& bodyID, const JPH::Shape* shape, const FTransform& initialWorldTransform, float friction, float restitution)
+const JPH::BodyID* UJoltSubsystem::AddStaticBodyCollision(const JPH::BodyID& bodyID, const JPH::Shape* shape, const FTransform& initialWorldTransform, float friction, float restitution, FName layerName)
 {
 	JPH::BodyCreationSettings shapeSettings(
 		shape,
 		JoltHelpers::ToJoltPos(initialWorldTransform.GetLocation()),
 		JoltHelpers::ToJoltRot(initialWorldTransform.GetRotation()),
 		JPH::EMotionType::Static,
-		Layers::NON_MOVING);
+		ResolveStaticLayer(layerName));
 
 	return AddBodyToSimulation(&bodyID, shapeSettings, friction, restitution);
 }
 
-const JPH::BodyID* UJoltSubsystem::AddKinematicBodyCollision(const JPH::BodyID& bodyID, const JPH::Shape* shape, const FTransform& initialWorldTransform, float friction, float restitution, float mass)
+const JPH::BodyID* UJoltSubsystem::AddKinematicBodyCollision(const JPH::BodyID& bodyID, const JPH::Shape* shape, const FTransform& initialWorldTransform, float friction, float restitution, float mass, FName layerName)
 {
 	JPH::BodyCreationSettings shapeSettings(
 		shape,
 		JoltHelpers::ToJoltPos(initialWorldTransform.GetLocation()),
 		JoltHelpers::ToJoltRot(initialWorldTransform.GetRotation()),
 		JPH::EMotionType::Kinematic,
-		Layers::MOVING);
+		ResolveDynamicLayer(layerName));
 
 	JPH::MassProperties msp;
 	msp.ScaleToMass(mass);
@@ -893,14 +946,14 @@ const JPH::BodyID* UJoltSubsystem::AddKinematicBodyCollision(const JPH::BodyID& 
 	return AddBodyToSimulation(&bodyID, shapeSettings, friction, restitution);
 }
 
-const JPH::BodyID* UJoltSubsystem::AddKinematicBodyCollision(const JPH::Shape* shape, const FTransform& initialWorldTransform, float friction, float restitution, float mass)
+const JPH::BodyID* UJoltSubsystem::AddKinematicBodyCollision(const JPH::Shape* shape, const FTransform& initialWorldTransform, float friction, float restitution, float mass, FName layerName)
 {
 	JPH::BodyCreationSettings shapeSettings(
 		shape,
 		JoltHelpers::ToJoltPos(initialWorldTransform.GetLocation()),
 		JoltHelpers::ToJoltRot(initialWorldTransform.GetRotation()),
-		JPH::EMotionType::Dynamic,
-		Layers::MOVING);
+		JPH::EMotionType::Kinematic,
+		ResolveDynamicLayer(layerName));
 
 	JPH::MassProperties msp;
 	msp.ScaleToMass(mass);
@@ -917,6 +970,17 @@ const JPH::BodyID* UJoltSubsystem::AddBodyToSimulation(const JPH::BodyID* bodyID
 
 	check(BodyInterface != nullptr);
 	check(bodyID != nullptr);
+
+	// Refuse to create a body with an unresolved layer — Jolt would otherwise stuff cObjectLayerInvalid
+	// into the broadphase and trip an assert deeper in the simulation. The Resolve* helpers have already
+	// logged which name failed to resolve.
+	if (shapeSettings.mObjectLayer == JPH::cObjectLayerInvalid)
+	{
+		UE_LOG(JoltSubSystemLogs, Error, TEXT("Refusing to create %s body with ID %d: object layer is invalid"),
+			*JoltHelpers::EMotionTypeToString(shapeSettings.mMotionType), bodyID->GetIndexAndSequenceNumber());
+		return nullptr;
+	}
+
 	JPH::Body* createdBody = BodyInterface->CreateBodyWithID(*bodyID, shapeSettings);
 	if (createdBody == nullptr)
 	{
@@ -929,6 +993,16 @@ const JPH::BodyID* UJoltSubsystem::AddBodyToSimulation(const JPH::BodyID* bodyID
 	BodyIDBodyMap.Add(createdBody->GetID().GetIndexAndSequenceNumber(), createdBody);
 	BodyInterface->AddBody(createdBody->GetID(), JPH::EActivation::Activate);
 	return bodyID;
+}
+
+void UJoltSubsystem::RemoveBodyForExternalOwner(const JPH::BodyID& bodyID)
+{
+	if (bodyID.IsInvalid() || BodyInterface == nullptr)
+		return;
+
+	BodyIDBodyMap.Remove(bodyID.GetIndexAndSequenceNumber());
+	BodyInterface->RemoveBody(bodyID);
+	BodyInterface->DestroyBody(bodyID);
 }
 
 TArray<int32> UJoltSubsystem::CollideShape(const UShapeComponent* shape, const FVector& shapeScale, const FTransform& shapeCOM, const FVector& offset)
@@ -987,7 +1061,7 @@ void UJoltSubsystem::RayCastShapeNarrowPhase(const UShapeComponent* shape, const
 
 	JPH::ClosestHitCollisionCollector<JPH::CastShapeCollector> collector;
 
-	JPH::SpecifiedObjectLayerFilter mov_filter(Layers::MOVING);
+	JPH::SpecifiedObjectLayerFilter mov_filter(ResolveObjectLayer(JoltSettings->DefaultDynamicLayer));
 
 	MainPhysicsSystem->GetNarrowPhaseQuery().CastShape(
 		shape_cast,
@@ -1075,10 +1149,10 @@ FTransform UJoltSubsystem::GetBodyCOM(int32 inBodyID)
 	return JoltHelpers::ToUETransform(GetBodyInterface()->GetCenterOfMassTransform(JPH::BodyID(inBodyID)));
 }
 
-void UJoltSubsystem::SaveState(TArray<uint8>& serverPhysicsState, SaveStateFilter* saveFilterImpl) const
+void UJoltSubsystem::SaveState(TArray<uint8>& serverPhysicsState, JPH::StateRecorderFilter* saveFilterImpl) const
 {
 	JPH::StateRecorderImpl* stateRecorder = new JPH::StateRecorderImpl;
-	MainPhysicsSystem->SaveState(*stateRecorder, JPH::EStateRecorderState::Bodies, saveFilterImpl);
+	MainPhysicsSystem->SaveState(*stateRecorder, JPH::EStateRecorderState::All, saveFilterImpl);
 	std::string physicsState = stateRecorder->GetData();
 	delete stateRecorder;
 	serverPhysicsState.Append(reinterpret_cast<const uint8*>(physicsState.data()), physicsState.size());
@@ -1115,12 +1189,18 @@ void UJoltSubsystem::LoadLandscapeFromDataAsset()
 			continue;
 		}
 
+		const JPH::ObjectLayer resolvedLayer = ResolveObjectLayer(shape.LayerName);
+		if (resolvedLayer == JPH::cObjectLayerInvalid)
+		{
+			continue;
+		}
+
 		JPH::BodyCreationSettings bodyCreationSettings(
 			result.Get(),
 			JoltHelpers::ToJoltPos(shape.WorldTransform.GetLocation()),
 			JoltHelpers::ToJoltRot(shape.WorldTransform.GetRotation()),
 			shape.MotionType,
-			shape.Layer);
+			resolvedLayer);
 
 		uint32 bodyID;
 		if (shape.MotionType == JPH::EMotionType::Static)
@@ -1241,7 +1321,14 @@ void UJoltSubsystem::GetAllLandscapeHeights(const ALandscape* landscapeActor)
 
 		FTransform finalTransform = landscapeComponent->GetRelativeTransform() * landscapeActor->GetActorTransform();
 
-		JPH::Body& floor = *BodyInterface->CreateBodyWithoutID(JPH::BodyCreationSettings(heightFieldShapeSettigns, JoltHelpers::ToJoltPos(finalTransform.GetLocation()), JoltHelpers::ToJoltRot(finalTransform.GetRotation()), JPH::EMotionType::Static, Layers::NON_MOVING));
+		const JPH::ObjectLayer landscapeLayer = ResolveObjectLayer(JoltSettings->DefaultStaticLayer);
+		if (landscapeLayer == JPH::cObjectLayerInvalid)
+		{
+			delete[] heights;
+			heights = nullptr;
+			continue;
+		}
+		JPH::Body& floor = *BodyInterface->CreateBodyWithoutID(JPH::BodyCreationSettings(heightFieldShapeSettigns, JoltHelpers::ToJoltPos(finalTransform.GetLocation()), JoltHelpers::ToJoltRot(finalTransform.GetRotation()), JPH::EMotionType::Static, landscapeLayer));
 
 		SavedBodies.Add(&floor);
 		delete[] heights;
@@ -1249,7 +1336,6 @@ void UJoltSubsystem::GetAllLandscapeHeights(const ALandscape* landscapeActor)
 	}
 }
 
-	#ifdef JOLT_PLUGIN_LANDSCAPE_API_MODIFIED
 void UJoltSubsystem::HandleLandscapeMeshes(const ALandscape* LandscapeActor)
 {
 	if (LandscapeActor == nullptr)
@@ -1272,6 +1358,18 @@ void UJoltSubsystem::HandleLandscapeMeshes(const ALandscape* LandscapeActor)
 		return;
 	}
 
+	// ULandscapeSplineSegment::GetLocalMeshComponents() is not exported with LANDSCAPE_API,
+	// So, this hacky way to using reflection works for now 
+	static const FName LocalMeshComponentsName(TEXT("LocalMeshComponents"));
+	FArrayProperty* localMeshesProp = FindFProperty<FArrayProperty>(
+		ULandscapeSplineSegment::StaticClass(), LocalMeshComponentsName);
+	if (localMeshesProp == nullptr)
+	{
+		UE_LOG(JoltSubSystemLogs, Warning,
+			TEXT("HandleLandscapeMeshes() LocalMeshComponents UPROPERTY not found on ULandscapeSplineSegment"));
+		return;
+	}
+
 	for (const TObjectPtr<ULandscapeSplineSegment>& splineSegment : splineSegments)
 	{
 		if (splineSegment->SplineMeshes.IsEmpty())
@@ -1280,13 +1378,19 @@ void UJoltSubsystem::HandleLandscapeMeshes(const ALandscape* LandscapeActor)
 			continue;
 		}
 
-		for (const USplineMeshComponent* splineMesh : splineSegment->GetLocalMeshComponents())
+		FScriptArrayHelper arrayHelper(localMeshesProp, localMeshesProp->ContainerPtrToValuePtr<void>(splineSegment));
+		for (int32 i = 0; i < arrayHelper.Num(); ++i)
 		{
-			ExtractSplineMeshGeometry(splineMesh->BodySetup, splineMesh->GetComponentTransform());
+			UObject* element = *reinterpret_cast<UObject**>(arrayHelper.GetRawPtr(i));
+			const USplineMeshComponent* splineMesh = Cast<USplineMeshComponent>(element);
+			if (splineMesh == nullptr || splineMesh->GetBodySetup() == nullptr)
+			{
+				continue;
+			}
+			ExtractSplineMeshGeometry(splineMesh->GetBodySetup(), splineMesh->GetComponentTransform());
 		}
 	}
 }
-	#endif
 
 void UJoltSubsystem::ExtractSplineMeshGeometry(const UBodySetup* splineMeshBodySetup, const FTransform& splineMeshTransform)
 {
@@ -1296,13 +1400,18 @@ void UJoltSubsystem::ExtractSplineMeshGeometry(const UBodySetup* splineMeshBodyS
 		return;
 	}
 
-	ExtractPhysicsGeometry(splineMeshTransform, splineMeshBodySetup, [this](const JPH::Shape* Shape, const FTransform& RelTransform) mutable {
+	const JPH::ObjectLayer splineMeshLayer = ResolveObjectLayer(JoltSettings->DefaultStaticLayer);
+	if (splineMeshLayer == JPH::cObjectLayerInvalid)
+	{
+		return;
+	}
+	ExtractPhysicsGeometry(splineMeshTransform, splineMeshBodySetup, [this, splineMeshLayer](const JPH::Shape* Shape, const FTransform& RelTransform) mutable {
 		JPH::BodyCreationSettings shapeSettings(
 			Shape,
 			JoltHelpers::ToJoltPos(RelTransform.GetLocation()),
 			JoltHelpers::ToJoltRot(RelTransform.GetRotation()),
 			JPH::EMotionType::Static,
-			Layers::NON_MOVING);
+			splineMeshLayer);
 
 		StaticBodyIDX++;
 		JPH::Body* createdBody = BodyInterface->CreateBodyWithoutID(shapeSettings);
@@ -1321,6 +1430,7 @@ void UJoltSubsystem::DrawDebugLines() const
 {
 	if (!JoltSettings->bEnableDebugRenderer)
 	{
+		JoltDebugRendererImpl->OnDebugRenderDisabled();
 		return;
 	}
 	if (MainPhysicsSystem == nullptr || DrawSettings == nullptr || JoltDebugRendererImpl == nullptr)
@@ -1328,7 +1438,8 @@ void UJoltSubsystem::DrawDebugLines() const
 		UE_LOG(JoltSubSystemLogs, Warning, TEXT("Debug renderer disabled"));
 		return;
 	}
-	MainPhysicsSystem->DrawBodies(*DrawSettings, JoltDebugRendererImpl);
+
+	JoltDebugRendererImpl->DrawBodiesFiltered(MainPhysicsSystem, *DrawSettings, JoltSettings);
 }
 #endif
 
@@ -1466,4 +1577,35 @@ void UJoltSubsystem::JoltSetPhysicsRotation(const JPH::BodyID& bodyID, const FQu
 void UJoltSubsystem::JoltSetPhysicsRotation(const int64& bodyID, const FQuat& rotationWS) const
 {
 	GetBodyInterface()->SetRotation(JPH::BodyID(bodyID), JoltHelpers::ToJoltRot(rotationWS), JPH::EActivation::Activate);
+}
+
+
+int32 UJoltSubsystem::GetObjectLayerByName(FName LayerName) const
+{
+	const int32* idx = LayerTable.NameToObjectLayer.Find(LayerName);
+	return idx != nullptr ? *idx : INDEX_NONE;
+}
+
+JPH::ObjectLayer UJoltSubsystem::ResolveObjectLayer(FName LayerName, JPH::ObjectLayer Fallback) const
+{
+	if (LayerName.IsNone())
+	{
+		return Fallback;
+	}
+	const int32* idx = LayerTable.NameToObjectLayer.Find(LayerName);
+	if (idx == nullptr)
+	{
+		if (Fallback == JPH::cObjectLayerInvalid)
+		{
+			UE_LOG(JoltSubSystemLogs, Error, TEXT("ResolveObjectLayer: layer '%s' not found in UJoltSettings — body creation will be refused"),
+				*LayerName.ToString());
+		}
+		else
+		{
+			UE_LOG(JoltSubSystemLogs, Warning, TEXT("ResolveObjectLayer: layer '%s' not found in UJoltSettings, falling back to id %u"),
+				*LayerName.ToString(), static_cast<uint32>(Fallback));
+		}
+		return Fallback;
+	}
+	return static_cast<JPH::ObjectLayer>(*idx);
 }

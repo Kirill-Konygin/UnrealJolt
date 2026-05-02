@@ -43,6 +43,7 @@ public class UnrealJoltLibrary : ModuleRules
 		cmakeOptions += " -DUSE_AVX=OFF ";
 		cmakeOptions += " -DUSE_AVX2=OFF ";
 		cmakeOptions += " -DUSE_F16C=OFF ";
+		cmakeOptions += " -DENABLE_OBJECT_STREAM=ON ";
 
 
 		if (Target.Platform == UnrealTargetPlatform.Win64)
@@ -70,6 +71,7 @@ public class UnrealJoltLibrary : ModuleRules
 			// This is needed to make sure the library generated is not a Static Library MT (but it's 'MD')
 			// making it compatible with Unreal.
 			cmakeOptions += " -DUSE_STATIC_MSVC_RUNTIME_LIBRARY=0";
+			cmakeOptions += " -DCMAKE_CXX_FLAGS=\"/fp:precise\"";
 		}
 		else if (Target.Platform == UnrealTargetPlatform.Mac)
 		{
@@ -97,16 +99,31 @@ public class UnrealJoltLibrary : ModuleRules
 		{
 
 			cmakeGeneratorType = "\"Unix Makefiles\"";
-			cmakeOptions += " -DBUILD_SHARED_LIBS=OFF ";
+			// Build Jolt as a shared library on Linux so every consuming .so
+			// resolves JPH symbols through a single libJolt.so at runtime. A
+			// static libJolt.a gets pulled into each dependent .so's link and
+			// duplicates Jolt's static ctors (e.g. Body.cpp's sFixedToWorldShape),
+			// tripping JPH::RefTarget::SetEmbedded during dlopen.
+			cmakeOptions += " -DBUILD_SHARED_LIBS=ON ";
 			cmakeOptions += " -DCMAKE_POSITION_INDEPENDENT_CODE=ON ";
 			cmakeOptions += " -DGENERATE_DEBUG_SYMBOLS=ON";
-			cmakeOptions += " -DCMAKE_CXX_FLAGS=\"-ffp-model=precise -ffp-contract=off\" ";
-
-
 			var toolChain = MBuildUtils.GetLatestBundledClangToolchain(EngineDir);
 			cmakeOptions += " -DCMAKE_SYSROOT=\"" + toolChain + "/x86_64-unknown-linux-gnu\" ";
 			cmakeOptions += " -DCMAKE_CXX_COMPILER=\"" + toolChain + "/x86_64-unknown-linux-gnu/bin/clang++\" ";
-			cmakeOptions += " -DCMAKE_CXX_FLAGS=\"-nostdinc++ -I " + EngineDir + "Source/ThirdParty/Unix/LibCxx/include/ -I " + EngineDir + "Source/ThirdParty/Unix/LibCxx/include/c++/v1/\" ";
+			// -ffp-model=precise sets -ffp-contract=on internally; -ffp-contract=off overrides it intentionally (required for
+			// cross-platform determinism). Clang 16+ warns about this override, so suppress it with -Wno-overriding-option.
+			// UE 5.7+: LibCxx moved from Engine/Source/ThirdParty/Unix/LibCxx into the toolchain bundle itself.
+			var legacyLibCxxPath = Path.Combine(EngineDir, "Source", "ThirdParty", "Unix", "LibCxx", "include");
+			string libCxxIncludes;
+			if (Directory.Exists(legacyLibCxxPath))
+			{
+				libCxxIncludes = "-I " + EngineDir + "Source/ThirdParty/Unix/LibCxx/include/ -I " + EngineDir + "Source/ThirdParty/Unix/LibCxx/include/c++/v1/";
+			}
+			else
+			{
+				libCxxIncludes = "-I " + toolChain + "/x86_64-unknown-linux-gnu/include/ -I " + toolChain + "/x86_64-unknown-linux-gnu/include/c++/v1/";
+			}
+			cmakeOptions += " -DCMAKE_CXX_FLAGS=\"-ffp-model=precise -ffp-contract=off -Wno-overriding-option -nostdinc++ " + libCxxIncludes + "\" ";
 			switch (BuildType)
 			{
 				case "Debug":
@@ -196,6 +213,14 @@ public class UnrealJoltLibrary : ModuleRules
 		PublicDefinitions.Add("JPH_OBJECT_LAYER_BITS=32");
 		PublicDefinitions.Add("JPH_OBJECT_STREAM");
 
+		// Linux builds Jolt as a shared library (see BUILD_SHARED_LIBS=ON).
+		// Jolt hides all symbols by default in that mode and only exports those
+		// marked JPH_EXPORT — which the headers gate on this define.
+		if (Target.Platform == UnrealTargetPlatform.Linux)
+		{
+			PublicDefinitions.Add("JPH_SHARED_LIBRARY");
+		}
+
 		switch (buildType)
 		{
 			case "Debug":
@@ -230,9 +255,18 @@ public class UnrealJoltLibrary : ModuleRules
 		}
 
 		// --- Now it's time to link the compiler library
-		string libPath;
+		//
+		// Windows: Jolt has no dllexport annotations, so every consuming DLL
+		// needs its own copy of Jolt.lib statically linked in.
+		//
+		// Linux: Jolt is built as a shared library (see BUILD_SHARED_LIBS=ON
+		// above) so every consuming .so links against one libJolt.so, keeping
+		// Jolt's static state (Factory, allocators, Body.cpp ctors) unique at
+		// runtime. Static linking on Linux would duplicate those across every
+		// dependent .so and crash during dlopen.
 		if (Target.Platform == UnrealTargetPlatform.Win64)
 		{
+			string libPath;
 			switch (buildType)
 			{
 				case "Debug":
@@ -245,11 +279,24 @@ public class UnrealJoltLibrary : ModuleRules
 					libPath = Path.Combine(JoltBuildDir, "Distribution", "Jolt.lib");
 					break;
 			}
-		} else {
-			libPath = Path.Combine(JoltBuildDir, "libJolt.a");
+			PublicAdditionalLibraries.Add(libPath);
 		}
-
-		PublicAdditionalLibraries.Add(libPath);
+		else if (Target.Platform == UnrealTargetPlatform.Mac)
+		{
+			PublicAdditionalLibraries.Add(Path.Combine(JoltBuildDir, "libJolt.a"));
+		}
+		else if (Target.Platform == UnrealTargetPlatform.Linux)
+		{
+			// Use -L + -lJolt so the library search path propagates to every
+			// transitive consumer (PublicAdditionalLibraries with a full path
+			// only flows to direct dependents, leaving downstream modules
+			// unable to find libJolt.so when they pull in other archives that
+			// reference JPH symbols).
+			PublicSystemLibraryPaths.Add(JoltBuildDir);
+			PublicSystemLibraries.Add("Jolt");
+			PublicRuntimeLibraryPaths.Add(JoltBuildDir);
+			RuntimeDependencies.Add(Path.Combine(JoltBuildDir, "libJolt.so"));
+		}
 
 
 	}

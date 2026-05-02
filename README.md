@@ -58,13 +58,6 @@ Plugin that brings [Jolt Physics](https://github.com/jrouwe/JoltPhysics) into un
 - **Landscapes** and **LandscapeSplines** are cooked automatically when you **Play in Editor**.  
   - This may be a chore if you work with many levels, playing a level at least one time in editor (will work on it).  
 - A `JoltData` directory is always generated during cooking and **must be included when packaging your project**.
-- #### ⚠️ Function for reading landscape spline data is not exposed by default in UE
-
-#### ✅ Enabling Landscape Spline Cooking
-1. Modify `Engine/Source/Runtime/Landscape/Classes/LandscapeSplineSegment.h`
-   and add `LANDSCAPE_API` to the `GetLocalMeshComponents()` declaration to fix link errors
-2. In `UnrealJolt/Source/UnrealJolt/UnrealJolt.Build.cs`, uncomment: 
-	`PublicDefinitions.Add("JOLT_PLUGIN_LANDSCAPE_API_MODIFIED");`
 ---
 ## Deterministic simulation
 

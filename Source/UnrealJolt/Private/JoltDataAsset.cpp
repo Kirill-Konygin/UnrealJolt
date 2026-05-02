@@ -1,6 +1,7 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
 #include "JoltDataAsset.h"
+#include "JoltSettings.h"
 #include "UnrealJolt/Helpers.h"
 
 UJoltDataAsset::UJoltDataAsset()
@@ -21,7 +22,18 @@ void UJoltDataAsset::GetJoltShapeBinaryData(const JPH::Body* inBody, FJoltShapeD
 	// This binary data will later be then retried during runtime
 	outShapeBinary.BinaryData = shapeBinaryData;
 	outShapeBinary.MotionType = inBody->GetMotionType();
-	outShapeBinary.Layer = inBody->GetObjectLayer();
+
+	const UJoltSettings* Settings = GetDefault<UJoltSettings>();
+	const int32 layerIndex = static_cast<int32>(inBody->GetObjectLayer());
+	if (Settings != nullptr && Settings->ObjectLayers.IsValidIndex(layerIndex))
+	{
+		outShapeBinary.LayerName = Settings->ObjectLayers[layerIndex].Name;
+	}
+	else
+	{
+		outShapeBinary.LayerName = NAME_None;
+	}
+
 	outShapeBinary.Friction = inBody->GetFriction();
 	outShapeBinary.Restitution = inBody->GetRestitution();
 	outShapeBinary.WorldTransform = JoltHelpers::ToUETransform(inBody->GetWorldTransform());

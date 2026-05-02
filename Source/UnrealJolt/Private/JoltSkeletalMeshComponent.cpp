@@ -1,13 +1,13 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
-#define IS_UE_56 ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION == 6
+#define IS_UE_56_OR_LATER (ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6)
 
 #include "JoltSkeletalMeshComponent.h"
 #include "Engine/World.h"
 #include "UnrealJolt/Helpers.h"
 #include "Misc/AssertionMacros.h"
 #include "PhysicsEngine/PhysicsAsset.h"
-#if IS_UE_56
+#if IS_UE_56_OR_LATER
 	#include "PhysicsEngine/SkeletalBodySetup.h"
 #endif
 
@@ -25,13 +25,6 @@ void UJoltSkeletalMeshComponent::AddOwnPhysicsAsset()
 		return;
 	}
 
-	UPhysicsAsset* PhysicsAsset = GetPhysicsAsset();
-	if (!PhysicsAsset)
-	{
-		UE_LOG(JoltSubSystemLogs, Warning, TEXT("UJoltSkeletalMeshComponent::AddOwnPhysicsAsset: could not get physics asset, configure physics asset in your editor"));
-		return;
-	}
-
 	/*
 	 * We are assigning a an ID regardless of the body being in the physics simulation or not
 	 * Might not be a good idea to waste body ids if we need to simulate lots of bodies
@@ -45,43 +38,92 @@ void UJoltSkeletalMeshComponent::AddOwnPhysicsAsset()
 		UE_LOG(JoltSubSystemLogs, Log, TEXT("Using dynamically generated BodyID: %d"), OwnBodyID.GetIndexAndSequenceNumber());
 	}
 
-	std::function<void(const JPH::Shape*, const FTransform&)> callback = [this](const JPH::Shape* shape, const FTransform& transform) {
-		JoltSubSystem->SkeletalMeshBodyIDLocalTransformMap.Add(&OwnBodyID, VisualOffset);
-		if (!bSimulatePhysics)
+	JoltSubSystem->SkeletalMeshBodyIDLocalTransformMap.Add(&OwnBodyID, VisualOffset);
+
+	if (!bSimulatePhysics)
+	{
+		BodyFilter = new JPH::IgnoreSingleBodyFilter(OwnBodyID);
+		return;
+	}
+
+	const JPH::Shape* shape = ExtractJoltShape(JoltSubSystem);
+	if (!shape)
+	{
+		UE_LOG(JoltSubSystemLogs, Error, TEXT("Invalid or unsupported shape configured for skeletal mesh: %s, owner: %s"), *GetName(), *GetOwner()->GetName());
+		BodyFilter = new JPH::IgnoreSingleBodyFilter(OwnBodyID);
+		return;
+	}
+
+	bIsKinematicBody ? JoltSubSystem->AddKinematicBodyCollision(OwnBodyID, shape, GetOwner()->GetActorTransform(), Friction, Restitution, Mass)
+					 : JoltSubSystem->AddDynamicBodyCollision(OwnBodyID, shape, GetOwner()->GetActorTransform(), Friction, Restitution, Mass);
+
+	if (bIncludeInSnapshot)
+	{
+		StateFilter = new SaveStateFilter();
+		StateFilter->AddToBodyIDAllowList(OwnBodyID);
+	}
+
+	JoltSubSystem->DynamicBodyIDActorMap.Add(&OwnBodyID, GetOwner());
+	BodyFilter = new JPH::IgnoreSingleBodyFilter(OwnBodyID);
+	UE_LOG(JoltSubSystemLogs, Log, TEXT("UJoltSkeletalMeshComponent::AddOwnPhysicsAsset: done setting up own rigid body"));
+}
+
+const JPH::Shape* UJoltSkeletalMeshComponent::ExtractJoltShape(UJoltSubsystem* jolt) const
+{
+	UPhysicsAsset* PhysicsAsset = GetPhysicsAsset();
+	if (!PhysicsAsset)
+	{
+		UE_LOG(JoltSubSystemLogs, Warning, TEXT("UJoltSkeletalMeshComponent::ExtractJoltShape: no physics asset on %s"), *GetName());
+		if (GetSkeletalMeshAsset())
 		{
-			return;
+			UE_LOG(JoltSubSystemLogs, Warning, TEXT("  SkeletalMesh IS set but has no physics asset"));
 		}
-
-		if (shape == nullptr)
+		else
 		{
-			UE_LOG(JoltSubSystemLogs, Error, TEXT("Invalid or unsupported shape configured for sekeltalmesh: %s, owner: %s"), *GetName(), *GetOwner()->GetName());
-			return;
+			UE_LOG(JoltSubSystemLogs, Warning, TEXT("  SkeletalMesh is NULL — BP defaults not applied yet?"));
 		}
-
-		if (!CentreOfMassOffset.IsZero())
+		if (PhysicsAssetOverride)
 		{
-			shape = new JPH::OffsetCenterOfMassShape(shape, JoltHelpers::ToJoltVec3(CentreOfMassOffset));
+			UE_LOG(JoltSubSystemLogs, Warning, TEXT("  PhysAssetOverride is set"));
 		}
-
-		bIsKinematicBody ? JoltSubSystem->AddKinematicBodyCollision(OwnBodyID, shape, this->GetOwner()->GetActorTransform(), Friction, Restitution, Mass)
-						 : JoltSubSystem->AddDynamicBodyCollision(OwnBodyID, shape, this->GetOwner()->GetActorTransform(), Friction, Restitution, Mass);
-
-		if (bIncludeInSnapshot)
+		else
 		{
-			StateFilter = new SaveStateFilter();
-			StateFilter->AddToBodyIDAllowList(OwnBodyID);
+			UE_LOG(JoltSubSystemLogs, Warning, TEXT("  PhysAssetOverride is NULL"));
 		}
+		return nullptr;
+	}
 
-		JoltSubSystem->DynamicBodyIDActorMap.Add(&OwnBodyID, GetOwner());
-		UE_LOG(JoltSubSystemLogs, Log, TEXT("UJoltSkeletalMeshComponent::AddOwnPhysicsAsset: done setting up own rigid body"));
-	};
+	UE_LOG(JoltSubSystemLogs, Log,
+		TEXT("UJoltSkeletalMeshComponent::ExtractJoltShape: PhysicsAsset=%s, BodySetups=%d"),
+		*PhysicsAsset->GetName(), PhysicsAsset->SkeletalBodySetups.Num());
+
+	const JPH::Shape* extractedShape = nullptr;
+
+	std::function<void(const JPH::Shape*, const FTransform&)> callback =
+		[&extractedShape](const JPH::Shape* shape, const FTransform&) {
+			if (shape && !extractedShape)
+				extractedShape = shape;
+		};
 
 	for (const USkeletalBodySetup* skeletalBodySetup : PhysicsAsset->SkeletalBodySetups)
 	{
-		JoltSubSystem->ExtractPhysicsGeometry(GetOwner()->GetActorTransform(), skeletalBodySetup, callback);
+		jolt->ExtractPhysicsGeometry(GetOwner()->GetActorTransform(), skeletalBodySetup, callback);
 	}
 
-	BodyFilter = new JPH::IgnoreSingleBodyFilter(OwnBodyID);
+	if (extractedShape && !CentreOfMassOffset.IsZero())
+	{
+		extractedShape = new JPH::OffsetCenterOfMassShape(
+			extractedShape, JoltHelpers::ToJoltVec3(CentreOfMassOffset));
+	}
+
+	if (!extractedShape)
+	{
+		UE_LOG(JoltSubSystemLogs, Warning,
+			TEXT("UJoltSkeletalMeshComponent::ExtractJoltShape: ExtractPhysicsGeometry produced no shapes from %s"),
+			*PhysicsAsset->GetName());
+	}
+
+	return extractedShape;
 }
 
 void UJoltSkeletalMeshComponent::SaveState(TArray<uint8>& serverPhysicsState)
@@ -132,38 +174,37 @@ void UJoltSkeletalMeshComponent::LoadJoltSubsystem(UJoltSubsystem* joltSubsystem
 
 void UJoltSkeletalMeshComponent::RayCastNarrowPhaseIgnoreSelf(const FVector& start, const FVector& end, NarrowPhaseQueryCallback& hitCallback) const
 {
-	check(JoltSubSystem != nullptr);
-	check(BodyFilter != nullptr);
+	if (!ensureMsgf(JoltSubSystem != nullptr && BodyFilter != nullptr,
+			TEXT("%hs: JoltSubSystem or BodyFilter not set on %s"),
+			__FUNCTION__, *GetName()))
+	{
+		return;
+	}
 	JoltSubSystem->RayCastNarrowPhase(start, end, hitCallback, *BodyFilter);
 }
 
 void UJoltSkeletalMeshComponent::JoltSetLinearAndAngularVelocity(const FVector& velocity, const FVector& angularVelocity) const
 {
-	check(JoltSubSystem != nullptr);
 	JoltSubSystem->JoltSetLinearAndAngularVelocity(OwnBodyID, velocity, angularVelocity);
 }
 
 void UJoltSkeletalMeshComponent::JoltSetLinearVelocity(const FVector& velocity) const
 {
-	check(JoltSubSystem != nullptr);
 	JoltSubSystem->JoltSetLinearVelocity(OwnBodyID, velocity);
 }
 
 void UJoltSkeletalMeshComponent::JoltSetPhysicsLocationAndRotation(const FVector& locationWS, const FQuat& rotationWS) const
 {
-	check(JoltSubSystem != nullptr);
-	JoltSubSystem->JoltSetPhysicsLocationAndRotation(OwnBodyID, (locationWS), (rotationWS));
+	JoltSubSystem->JoltSetPhysicsLocationAndRotation(OwnBodyID, locationWS, rotationWS);
 }
 
 void UJoltSkeletalMeshComponent::JoltSetPhysicsLocation(const FVector& locationWS) const
 {
-	check(JoltSubSystem != nullptr);
 	JoltSubSystem->JoltSetPhysicsLocation(OwnBodyID, locationWS);
 }
 
 void UJoltSkeletalMeshComponent::JoltSetPhysicsRotation(const FQuat& rotationWS) const
 {
-	check(JoltSubSystem != nullptr);
 	JoltSubSystem->JoltSetPhysicsRotation(OwnBodyID, rotationWS);
 }
 
@@ -174,43 +215,36 @@ FVector UJoltSkeletalMeshComponent::JoltGetVelocityAt(const FVector& locationWS)
 
 void UJoltSkeletalMeshComponent::JoltAddForceAtLocation(const FVector& force, const FVector& locationWS) const
 {
-	check(JoltSubSystem != nullptr);
 	JoltSubSystem->JoltAddForceAtLocation(OwnBodyID, force, locationWS);
 }
 
 void UJoltSkeletalMeshComponent::JoltAddImpulseLocation(const FVector& force, const FVector& locationWS) const
 {
-	check(JoltSubSystem != nullptr);
 	JoltSubSystem->JoltAddImpulseAtLocation(OwnBodyID, force, locationWS);
 }
 
 void UJoltSkeletalMeshComponent::JoltAddCentralForce(const FVector& force) const
 {
-	check(JoltSubSystem != nullptr);
 	JoltSubSystem->JoltAddForce(OwnBodyID, force);
 }
 
 void UJoltSkeletalMeshComponent::JoltGetPhysicsState(FTransform& transform, FTransform& transformCOM, FVector& velocity, FVector& angularVelocity) const
 {
-	check(JoltSubSystem != nullptr);
 	JoltSubSystem->JoltGetPhysicsState(OwnBodyID, transform, transformCOM, velocity, angularVelocity);
 }
 
 void UJoltSkeletalMeshComponent::JoltAddCentralImpulse(const FVector& impulse) const
 {
-	check(JoltSubSystem != nullptr);
 	JoltSubSystem->JoltAddCentralImpulse(OwnBodyID, impulse);
 }
 
 void UJoltSkeletalMeshComponent::JoltAddTorque(const FVector& torque) const
 {
-	check(JoltSubSystem != nullptr);
 	JoltSubSystem->JoltAddTorque(OwnBodyID, torque);
 }
 
 void UJoltSkeletalMeshComponent::JoltReadPhysicsTransform(FTransform& outTransform) const
 {
-	check(JoltSubSystem != nullptr);
 	JoltSubSystem->JoltGetPhysicsTransform(OwnBodyID, outTransform);
 }
 
@@ -218,4 +252,9 @@ void UJoltSkeletalMeshComponent::JoltSetVisualTransform(FTransform& joltTransfor
 {
 	JoltSubSystem->ApplyLocalTxIfAny(&OwnBodyID, joltTransformWS);
 	SetWorldTransform(joltTransformWS);
+}
+
+int32 UJoltSkeletalMeshComponent::GetJoltBodyID() const
+{
+	return OwnBodyID.GetIndexAndSequenceNumber();
 }

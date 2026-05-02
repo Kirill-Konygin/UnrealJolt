@@ -84,7 +84,7 @@ public:
 	void JoltAddTorque(const FVector& torque) const;
 
 	UFUNCTION(BlueprintCallable, Category = "Jolt Physics|Skeletal Mesh", BlueprintPure = false)
-	int32 GetJoltBodyID() const { return OwnBodyID.GetIndexAndSequenceNumber(); };
+	int32 GetJoltBodyID() const;
 
 	UFUNCTION(BlueprintCallable, Category = "Jolt Physics|Skeletal Mesh", BlueprintPure = false)
 	void JoltSetPhysicsLocationAndRotation(const FVector& locationWS, const FQuat& rotationWS) const;
@@ -104,6 +104,13 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Jolt Physics|Skeletal Mesh", BlueprintPure = false)
 	void JoltReadPhysicsTransform(FTransform& outTransform) const;
 
+	/**
+	 * Extracts the first JPH::Shape from this component's physics asset.
+	 * Applies CentreOfMassOffset if set. Returns nullptr if no physics asset or no shapes found.
+	 * Does NOT create a body — use this when you need the shape for external body creation.
+	 */
+	const JPH::Shape* ExtractJoltShape(UJoltSubsystem* jolt) const;
+
 	void RayCastNarrowPhaseIgnoreSelf(const FVector& start, const FVector& end, NarrowPhaseQueryCallback& hitCallback) const;
 
 	/* Will simply set the location of the visual mesh only
@@ -115,6 +122,13 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Jolt Physics|Skeletal Mesh", BlueprintPure = false)
 	void SetBodyID(int32 bodyID) { OwnBodyID = JPH::BodyID(bodyID); };
+
+	// For externally-managed bodies where bManualInitialization=true skips
+	// LoadJoltSubsystem, so the JoltSubSystem pointer never gets set via the
+	// normal AddOwnPhysicsAsset path. Call this alongside SetBodyID so
+	// mesh-level Jolt* methods route through the real subsystem instead of
+	// null-dereferencing.
+	void SetJoltSubsystem(UJoltSubsystem* jolt) { JoltSubSystem = jolt; }
 
 	virtual void
 	TickComponent(float DeltaTime, enum ELevelTick TickType,

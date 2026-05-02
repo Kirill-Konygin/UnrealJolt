@@ -5,6 +5,36 @@
 #include "CoreMinimal.h"
 #include "JoltSettings.generated.h"
 
+USTRUCT(BlueprintType)
+struct UNREALJOLT_API FJoltBroadphaseLayer
+{
+	GENERATED_BODY()
+
+	UPROPERTY(Config, EditAnywhere, Category = "Layers")
+	FName Name;
+
+	FJoltBroadphaseLayer() = default;
+	explicit FJoltBroadphaseLayer(FName InName) : Name(InName) {}
+};
+
+USTRUCT(BlueprintType)
+struct UNREALJOLT_API FJoltObjectLayer
+{
+	GENERATED_BODY()
+
+	UPROPERTY(Config, EditAnywhere, Category = "Layers")
+	FName Name;
+
+	// Which broadphase layer this object layer maps to. Must match a name in UJoltSettings::BroadphaseLayers.
+	UPROPERTY(Config, EditAnywhere, Category = "Layers")
+	FName BroadphaseLayer;
+
+	// Names of other object layers this layer collides with. Collision is symmetric:
+	// UJoltSettings::PostEditChangeProperty mirrors edits so both directions stay in sync.
+	UPROPERTY(Config, EditAnywhere, Category = "Layers")
+	TSet<FName> CollidesWith;
+};
+
 /**
  *
  */
@@ -119,8 +149,50 @@ public:
 	 * currently very slow when rendering landscape shape
 	 * TODO: update the draw triangle batch function for faster debug renderer
 	 */
-	UPROPERTY(Config, EditAnywhere, Category = Settings)
+	UPROPERTY(Config, EditAnywhere, Category = "Debug Rendering")
 	bool bEnableDebugRenderer;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Debug Rendering", meta = (EditCondition = "bEnableDebugRenderer"))
+	bool bDebugDrawStaticBodies;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Debug Rendering", meta = (EditCondition = "bEnableDebugRenderer"))
+	bool bDebugDrawDynamicBodies;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Debug Rendering", meta = (EditCondition = "bEnableDebugRenderer"))
+	bool bDebugDrawKinematicBodies;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Debug Rendering", meta = (EditCondition = "bEnableDebugRenderer"))
+	bool bDebugDrawHeightFields;
+
+	/*
+	 * Broadphase layers. Each broadphase layer becomes a separate bounding volume tree in Jolt's
+	 * broadphase. Typical setups have 2 (NonMoving / Moving). Jolt's internal type is uint8 so the
+	 * maximum is 255.
+	 */
+	UPROPERTY(Config, EditAnywhere, Category = "Layers", meta = (TitleProperty = "Name"))
+	TArray<FJoltBroadphaseLayer> BroadphaseLayers;
+
+	/*
+	 * Object layers. Each body is assigned to one. ObjectLayers[i]'s array index becomes its
+	 * JPH::ObjectLayer (uint16) at runtime, so order is load-bearing for code that caches IDs —
+	 * prefer using name-based lookup (UJoltSubsystem::ResolveObjectLayer) in new code.
+	 */
+	UPROPERTY(Config, EditAnywhere, Category = "Layers", meta = (TitleProperty = "Name"))
+	TArray<FJoltObjectLayer> ObjectLayers;
+
+	/*
+	 * Default layer name used when AddDynamicBody / AddKinematicBody is called without an explicit
+	 * layer parameter. Must match an entry in ObjectLayers.
+	 */
+	UPROPERTY(Config, EditAnywhere, Category = "Layers")
+	FName DefaultDynamicLayer;
+
+	/*
+	 * Default layer name used when AddStaticBody is called without an explicit layer parameter.
+	 * Must match an entry in ObjectLayers.
+	 */
+	UPROPERTY(Config, EditAnywhere, Category = "Layers")
+	FName DefaultStaticLayer;
 
 #if WITH_EDITOR
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;

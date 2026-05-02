@@ -4,10 +4,17 @@
 #include "PhysicalMaterials/PhysicalMaterial.h"
 #include "JoltMain.h"
 
-// Jolt scale is 1=1m, UE is 1=1cm So x100
-// Also keep in mind that Jolt uses Y axis as the "UP" while UE uses Z.
+/* Jolt scale is 1=1m, UE is 1=1cm So x100
+ Also keep in mind that Jolt uses Y axis as the "UP" while UE uses Z.
+*/
+
+// float  for Vec3 (jolt float)
 #define JOLT_TO_WORLD_SCALE 100.f
 #define WORLD_TO_JOLT_SCALE 0.01f
+
+// double for RVec3 (jolt double)
+#define JOLT_TO_WORLD_SCALE_D 100.0
+#define WORLD_TO_JOLT_SCALE_D 0.01
 
 class JoltHelpers
 {
@@ -31,13 +38,14 @@ public:
 	inline static JPH::Vec3 ToJoltVec3(const FVector& Sv, const bool& adjustScale = true)
 	{
 		if (adjustScale)
-			return JPH::Vec3(Sv.X, Sv.Z, Sv.Y) * WORLD_TO_JOLT_SCALE;
+			return JPH::Vec3(static_cast<float>(Sv.X), static_cast<float>(Sv.Z), static_cast<float>(Sv.Y)) * WORLD_TO_JOLT_SCALE;
 
-		return JPH::Vec3(Sv.X, Sv.Z, Sv.Y);
+		return JPH::Vec3(static_cast<float>(Sv.X), static_cast<float>(Sv.Z), static_cast<float>(Sv.Y));
 	}
 
 	inline static FVector ToUESize(const JPH::Vec3& Sv, const bool& adjustScale = true)
 	{
+		// Vec3 is float-based — use float scale constant to match
 		if (adjustScale)
 			return FVector(Sv.GetX(), Sv.GetZ(), Sv.GetY()) * JOLT_TO_WORLD_SCALE;
 
@@ -46,13 +54,12 @@ public:
 
 	inline static FVector ToUEPos(const JPH::RVec3& V, const FVector& WorldOrigin = FVector(0))
 	{
-
-		return FVector(V.GetX(), V.GetZ(), V.GetY()) * JOLT_TO_WORLD_SCALE + WorldOrigin;
+		return FVector(V.GetX(), V.GetZ(), V.GetY()) * JOLT_TO_WORLD_SCALE_D + WorldOrigin;
 	}
 
 	inline static JPH::RVec3 ToJoltPos(const FVector& V, const FVector& WorldOrigin = FVector(0))
 	{
-		return JPH::RVec3(V.X - WorldOrigin.X, V.Z - WorldOrigin.Z, V.Y - WorldOrigin.Y) * WORLD_TO_JOLT_SCALE;
+		return JPH::RVec3(V.X - WorldOrigin.X, V.Z - WorldOrigin.Z, V.Y - WorldOrigin.Y) * WORLD_TO_JOLT_SCALE_D;
 	}
 
 	inline static FQuat ToUERot(const JPH::Quat& Q)
@@ -62,7 +69,7 @@ public:
 
 	inline static JPH::Quat ToJoltRot(const FQuat& Q)
 	{
-		return JPH::Quat(-Q.X, -Q.Z, -Q.Y, Q.W);
+		return JPH::Quat(static_cast<float>(-Q.X), static_cast<float>(-Q.Z), static_cast<float>(-Q.Y), static_cast<float>(Q.W));
 	}
 
 	inline static JPH::Quat ToJoltRot(const FRotator& r)
