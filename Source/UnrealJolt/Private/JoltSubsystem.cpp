@@ -312,7 +312,8 @@ void UJoltSubsystem::InterpolatePhysicsFrame(const double& alpha)
 			FQuat::Slerp(
 				JoltBodyTransformHistory.Find(bodyIDActorPair.Key)->PreviousFrame.GetRotation(),
 				JoltBodyTransformHistory.Find(bodyIDActorPair.Key)->CurrentFrame.GetRotation(),
-				alpha));
+				alpha),
+			false, nullptr, ETeleportType::TeleportPhysics);
 	}
 }
 
