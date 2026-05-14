@@ -24,6 +24,7 @@
  * that should not be exposed to avoid accidental usage in project code  */
 class UJoltSkeletalMeshComponent;
 class JoltAxisConstraint;
+class JoltPhysicsMaterial;
 
 UDELEGATE(BlueprintCallable)
 DECLARE_DYNAMIC_DELEGATE_FourParams(FNarrowPhaseQueryDelegate, const FVector&, hitLocation, const FVector&, hitNormal, bool, bHasHit, const int32, hitBodyID);
