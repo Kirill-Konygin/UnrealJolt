@@ -75,14 +75,6 @@ Configured under **Project Settings → Plugins → Jolt → Layers**.
 
 To ensure deterministic simulation with Jolt Physics across platforms, follow the [official guidelines](https://jrouwe.github.io/JoltPhysicsDocs/5.3.0/index.html#deterministic-simulation). Use Jolt’s math and utility functions (`Sin`, `Cos`, `QuickSort`, `BinaryHeapPush/Pop`, `Hash`) instead of STL or platform-dependent ones, and always keep API calls (body/constraint creation, updates) in the same order.
 
-For builds:
-
-- On **Windows (MSVC)**, add `FPSemantics = FPSemanticsMode.Precise;` to `<ProjectName>Target.cs` and `<ProjectName>Editor.Target.cs`.  
-- On **Linux (Clang)**, add `AdditionalCompilerArguments += " -ffp-model=precise -ffp-contract=off";` to the same files.  
-
-Because these options differ from Unreal defaults (`LinuxToolChain.cs`, `VCToolChain.cs`), create a custom build config or apply the changes consistently across both game and editor builds by modifying:  
-`UnrealClient.Target.cs`, `UnrealEditor.Target.cs`, `UnrealGame.Target.cs`, and `UnrealServer.Target.cs`.
-
 ---
 
 ## Contributing
