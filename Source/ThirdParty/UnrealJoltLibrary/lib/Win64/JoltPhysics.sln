@@ -1,0 +1,59 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "ALL_BUILD", "ALL_BUILD.vcxproj", "{495FC73C-461C-331B-B4A0-B9B5957AE1C0}"
+	ProjectSection(ProjectDependencies) = postProject
+		{190FD47F-5021-32EC-AC20-F63FBC7A285D} = {190FD47F-5021-32EC-AC20-F63FBC7A285D}
+		{F0707BCA-D5B3-3371-8212-19CFAB8F11A7} = {F0707BCA-D5B3-3371-8212-19CFAB8F11A7}
+	EndProjectSection
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "INSTALL", "INSTALL.vcxproj", "{4F91CB60-7A61-31E7-BAA6-104565C486EC}"
+	ProjectSection(ProjectDependencies) = postProject
+		{495FC73C-461C-331B-B4A0-B9B5957AE1C0} = {495FC73C-461C-331B-B4A0-B9B5957AE1C0}
+		{F0707BCA-D5B3-3371-8212-19CFAB8F11A7} = {F0707BCA-D5B3-3371-8212-19CFAB8F11A7}
+	EndProjectSection
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Jolt", "Jolt.vcxproj", "{190FD47F-5021-32EC-AC20-F63FBC7A285D}"
+	ProjectSection(ProjectDependencies) = postProject
+		{F0707BCA-D5B3-3371-8212-19CFAB8F11A7} = {F0707BCA-D5B3-3371-8212-19CFAB8F11A7}
+	EndProjectSection
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "ZERO_CHECK", "ZERO_CHECK.vcxproj", "{F0707BCA-D5B3-3371-8212-19CFAB8F11A7}"
+	ProjectSection(ProjectDependencies) = postProject
+	EndProjectSection
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x64 = Debug|x64
+		Release|x64 = Release|x64
+		Distribution|x64 = Distribution|x64
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{495FC73C-461C-331B-B4A0-B9B5957AE1C0}.Debug|x64.ActiveCfg = Debug|x64
+		{495FC73C-461C-331B-B4A0-B9B5957AE1C0}.Debug|x64.Build.0 = Debug|x64
+		{495FC73C-461C-331B-B4A0-B9B5957AE1C0}.Release|x64.ActiveCfg = Release|x64
+		{495FC73C-461C-331B-B4A0-B9B5957AE1C0}.Release|x64.Build.0 = Release|x64
+		{495FC73C-461C-331B-B4A0-B9B5957AE1C0}.Distribution|x64.ActiveCfg = Distribution|x64
+		{495FC73C-461C-331B-B4A0-B9B5957AE1C0}.Distribution|x64.Build.0 = Distribution|x64
+		{4F91CB60-7A61-31E7-BAA6-104565C486EC}.Debug|x64.ActiveCfg = Debug|x64
+		{4F91CB60-7A61-31E7-BAA6-104565C486EC}.Release|x64.ActiveCfg = Release|x64
+		{4F91CB60-7A61-31E7-BAA6-104565C486EC}.Distribution|x64.ActiveCfg = Distribution|x64
+		{190FD47F-5021-32EC-AC20-F63FBC7A285D}.Debug|x64.ActiveCfg = Debug|x64
+		{190FD47F-5021-32EC-AC20-F63FBC7A285D}.Debug|x64.Build.0 = Debug|x64
+		{190FD47F-5021-32EC-AC20-F63FBC7A285D}.Release|x64.ActiveCfg = Release|x64
+		{190FD47F-5021-32EC-AC20-F63FBC7A285D}.Release|x64.Build.0 = Release|x64
+		{190FD47F-5021-32EC-AC20-F63FBC7A285D}.Distribution|x64.ActiveCfg = Distribution|x64
+		{190FD47F-5021-32EC-AC20-F63FBC7A285D}.Distribution|x64.Build.0 = Distribution|x64
+		{F0707BCA-D5B3-3371-8212-19CFAB8F11A7}.Debug|x64.ActiveCfg = Debug|x64
+		{F0707BCA-D5B3-3371-8212-19CFAB8F11A7}.Debug|x64.Build.0 = Debug|x64
+		{F0707BCA-D5B3-3371-8212-19CFAB8F11A7}.Release|x64.ActiveCfg = Release|x64
+		{F0707BCA-D5B3-3371-8212-19CFAB8F11A7}.Release|x64.Build.0 = Release|x64
+		{F0707BCA-D5B3-3371-8212-19CFAB8F11A7}.Distribution|x64.ActiveCfg = Distribution|x64
+		{F0707BCA-D5B3-3371-8212-19CFAB8F11A7}.Distribution|x64.Build.0 = Distribution|x64
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {F3752491-1459-3EDD-8F89-5D750313E550}
+	EndGlobalSection
+	GlobalSection(ExtensibilityAddIns) = postSolution
+	EndGlobalSection
+EndGlobal

@@ -7,6 +7,7 @@
 #include "JoltDataAsset.h"
 #include "JoltWorker.h"
 #include "JoltSettings.h"
+#include "JoltPhysicsMaterial.h"
 #include "Landscape.h"
 #include "Subsystems/WorldSubsystem.h"
 #include "JoltLayerTable.h"

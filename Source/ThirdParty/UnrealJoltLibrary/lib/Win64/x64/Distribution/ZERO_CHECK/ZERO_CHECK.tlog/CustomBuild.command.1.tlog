@@ -1,0 +1,10 @@
+^C:\USERS\KIRILL\DOCUMENTS\UNREAL PROJECTS\QUANTUMCORE\PLUGINS\UNREALJOLT\SOURCE\THIRDPARTY\UNREALJOLTLIBRARY\LIB\WIN64\CMAKEFILES\3F6F8EC0085D1CC7C5C00871AFC8C9A0\GENERATE.STAMP.RULE
+setlocal
+"C:\Program Files\CMake\bin\cmake.exe" "-SC:/Users/Kirill/Documents/Unreal Projects/QuantumCore/Plugins/UnrealJolt/Source/ThirdParty/UnrealJoltLibrary/JoltPhysics/Build" "-BC:/Users/Kirill/Documents/Unreal Projects/QuantumCore/Plugins/UnrealJolt/Source/ThirdParty/UnrealJoltLibrary/lib/Win64" --check-stamp-list CMakeFiles/generate.stamp.list --vs-solution-file "C:/Users/Kirill/Documents/Unreal Projects/QuantumCore/Plugins/UnrealJolt/Source/ThirdParty/UnrealJoltLibrary/lib/Win64/JoltPhysics.sln"
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd

@@ -1,0 +1,13 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <CustomBuild Include="C:\Users\Kirill\Documents\Unreal Projects\QuantumCore\Plugins\UnrealJolt\Source\ThirdParty\UnrealJoltLibrary\lib\Win64\CMakeFiles\3f6f8ec0085d1cc7c5c00871afc8c9a0\generate.stamp.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="CMake Rules">
+      <UniqueIdentifier>{166AD314-50E2-3900-AB35-A856F638C6DE}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

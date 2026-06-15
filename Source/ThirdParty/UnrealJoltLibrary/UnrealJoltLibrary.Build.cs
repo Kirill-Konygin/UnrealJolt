@@ -151,8 +151,8 @@ public class UnrealJoltLibrary : ModuleRules
 
 		var generateCommand = "";
 		generateCommand += MBuildUtils.GetCMakeExe() + " ";
-		generateCommand += " -S " + Path.Combine(ThirdPartyJoltPath, "Build") + " ";
-		generateCommand += "-B " + JoltBuildDir + " ";
+		generateCommand += " -S \"" + Path.Combine(ThirdPartyJoltPath, "Build") + "\" ";
+		generateCommand += "-B \"" + JoltBuildDir + "\" ";
 		generateCommand += "-G " + cmakeGeneratorType + " ";
 		generateCommand += buildTypeGenerator;
 		generateCommand += cmakeOptions;
@@ -164,8 +164,8 @@ public class UnrealJoltLibrary : ModuleRules
 		}
 		// Compilation step
 		var buildCommand = "";
-		buildCommand += MBuildUtils.GetCMakeExe() + " ";
-		buildCommand += " --build " + JoltBuildDir + " ";
+		buildCommand += MBuildUtils.GetCMakeExe() + " ";	
+		buildCommand += " --build \"" + JoltBuildDir + "\" ";
 		buildCommand += " -j " + Environment.ProcessorCount + " ";
 		buildCommand += buildTypeCompilator;
 
