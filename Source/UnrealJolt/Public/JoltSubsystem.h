@@ -31,9 +31,18 @@ DECLARE_DYNAMIC_DELEGATE_FourParams(FNarrowPhaseQueryDelegate, const FVector&, h
 
 struct FFrameHistory
 {
-	FTransform PreviousFrame;
+	FVector	 PrevLocation = FVector::ZeroVector;
+	FRotator PrevRotation = FRotator::ZeroRotator;
 
-	FTransform CurrentFrame;
+	FVector	 CurrentLocation = FVector::ZeroVector;
+	FRotator CurrentRotation = FRotator::ZeroRotator;
+
+	// Just getters so friend class subsystem's wont be tied to struct field names
+	const FVector&	GetPreviousFrameLocation() const { return PrevLocation; }
+	const FRotator& GetPreviousFrameRotation() const { return PrevRotation; }
+
+	const FVector&	GetCurrentFrameLocation() const { return CurrentLocation; }
+	const FRotator& GetCurrentFrameRotation() const { return CurrentRotation; }
 };
 
 USTRUCT(BlueprintType)
@@ -46,6 +55,16 @@ struct FCastShapeResult
 	FVector ContactLocationFoundShape;
 
 	FVector ContactLocationCastedShape;
+};
+
+struct FJoltBodyActor
+{
+	FJoltBodyActor(const JPH::BodyID* JoltBodyID, const TWeakObjectPtr<AActor>& Actor)
+		: JoltBodyID(JoltBodyID), Actor(Actor) {}
+
+	const JPH::BodyID*	   JoltBodyID;
+	TWeakObjectPtr<AActor> Actor;
+	FFrameHistory		   FrameHistory;
 };
 
 typedef const std::function<void(const FVector&, const FVector&, const bool&, const uint32&, const UPhysicalMaterial*)> NarrowPhaseQueryCallback;
@@ -252,7 +271,7 @@ public:
 	// of UJoltSubsystem. Not BlueprintCallable.
 	JPH::BodyInterface* GetBodyInterface() const { return BodyInterface; }
 	JPH::PhysicsSystem* GetPhysicsSystem() const { return MainPhysicsSystem; }
-	const JPH::BodyID*  AddDynamicBodyForExternalOwner(
+	const JPH::BodyID*	AddDynamicBodyForExternalOwner(
 		const JPH::BodyID& bodyID,
 		const JPH::Shape*  shape,
 		const FTransform&  initialWorldTransform,
@@ -260,7 +279,7 @@ public:
 		FName layerName = NAME_None);
 
 	// Mirror of AddDynamicBodyForExternalOwner: removes and destroys the body
-	// in Jolt AND drops the BodyIDBodyMap entry. 
+	// in Jolt AND drops the BodyIDBodyMap entry.
 	void RemoveBodyForExternalOwner(const JPH::BodyID& bodyID);
 
 private:
@@ -346,7 +365,7 @@ private:
 
 	TMap<EPhysicalSurface, TWeakObjectPtr<const UPhysicalMaterial>> SurfaceUEMaterialMap;
 
-	TMap<const JPH::BodyID*, TWeakObjectPtr<AActor>> DynamicBodyIDActorMap;
+	TArray<FJoltBodyActor> JoltBodyActors;
 
 	TMap<const JPH::BodyID*, FTransform> SkeletalMeshBodyIDLocalTransformMap;
 

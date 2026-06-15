@@ -33,7 +33,6 @@
 
 DEFINE_LOG_CATEGORY(JoltSubSystemLogs);
 
-
 void UJoltSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 
@@ -283,35 +282,36 @@ void UJoltSubsystem::StepPhysics(bool bWithCallbacks)
 void UJoltSubsystem::RecordFrames()
 {
 
-	for (const TPair<const JPH::BodyID*, TWeakObjectPtr<AActor>>& bodyIDActorPair : DynamicBodyIDActorMap)
+	for (FJoltBodyActor& Entry : JoltBodyActors)
 	{
-		FFrameHistory& history = JoltBodyTransformHistory.FindOrAdd(bodyIDActorPair.Key);
-		history.PreviousFrame = history.CurrentFrame;
-		JoltGetPhysicsTransform(*bodyIDActorPair.Key, history.CurrentFrame);
-		ApplyLocalTxIfAny(bodyIDActorPair.Key, history.CurrentFrame);
+		Entry.FrameHistory.PrevLocation = Entry.FrameHistory.CurrentLocation;
+		Entry.FrameHistory.PrevRotation = Entry.FrameHistory.CurrentRotation;
+
+		FTransform CurrentTransform;
+		JoltGetPhysicsTransform(*Entry.JoltBodyID, CurrentTransform);
+		ApplyLocalTxIfAny(Entry.JoltBodyID, CurrentTransform);
+		Entry.FrameHistory.CurrentLocation = CurrentTransform.GetLocation();
+		Entry.FrameHistory.CurrentRotation = CurrentTransform.GetRotation().Rotator();
 	}
 }
 
 void UJoltSubsystem::InterpolatePhysicsFrame(const double& alpha)
 {
-	for (const TPair<const JPH::BodyID*, TWeakObjectPtr<AActor>>& bodyIDActorPair : DynamicBodyIDActorMap)
+	TRACE_CPUPROFILER_EVENT_SCOPE(UJoltSubsystem::InterpolatePhysicsFrame);
+	for (const FJoltBodyActor& JoltBodyActor : JoltBodyActors)
 	{
-		if (JoltBodyTransformHistory.Find(bodyIDActorPair.Key) == nullptr || JoltBodyTransformHistory.Find(bodyIDActorPair.Key) == nullptr)
-			return;
-
-		TWeakObjectPtr<AActor> ownignActor = bodyIDActorPair.Value.Get();
-		if (ownignActor == nullptr)
-		{
+		auto OwningActor = JoltBodyActor.Actor.Pin();
+		if (OwningActor == nullptr)
 			continue;
-		}
-		ownignActor->SetActorLocationAndRotation(
+
+		OwningActor->SetActorLocationAndRotation(
 			FMath::Lerp(
-				JoltBodyTransformHistory.Find(bodyIDActorPair.Key)->PreviousFrame.GetLocation(),
-				JoltBodyTransformHistory.Find(bodyIDActorPair.Key)->CurrentFrame.GetLocation(),
+				JoltBodyActor.FrameHistory.PrevLocation,
+				JoltBodyActor.FrameHistory.CurrentLocation,
 				alpha),
 			FQuat::Slerp(
-				JoltBodyTransformHistory.Find(bodyIDActorPair.Key)->PreviousFrame.GetRotation(),
-				JoltBodyTransformHistory.Find(bodyIDActorPair.Key)->CurrentFrame.GetRotation(),
+				JoltBodyActor.FrameHistory.PrevRotation.Quaternion(),
+				JoltBodyActor.FrameHistory.CurrentRotation.Quaternion(),
 				alpha),
 			false, nullptr, ETeleportType::TeleportPhysics);
 	}
@@ -402,7 +402,7 @@ int64 UJoltSubsystem::AddDynamicBody(AActor* body, const float& friction, const 
 		const JPH::BodyID* joltBodyID = AddDynamicBodyCollision(shape, FinalXform, friction, restitution, mass, Layer);
 		if (joltBodyID != nullptr)
 		{
-			DynamicBodyIDActorMap.Add(joltBodyID, body);
+			JoltBodyActors.Emplace(joltBodyID, body);
 			ID = joltBodyID->GetIndexAndSequenceNumber();
 		}
 	});
@@ -502,7 +502,7 @@ void UJoltSubsystem::ExtractComplexPhysicsGeometry(const FTransform& xformSoFar,
 	auto pushTri = [&](uint32 a, uint32 b, uint32 c) {
 		if (a < static_cast<uint32>(NumVerts) && b < static_cast<uint32>(NumVerts) && c < static_cast<uint32>(NumVerts))
 		{
-			triangles.push_back(JPH::IndexedTriangle(a, c, b, MaterialIDX));  // Swap b and c so the triangles face outward
+			triangles.push_back(JPH::IndexedTriangle(a, c, b, MaterialIDX)); // Swap b and c so the triangles face outward
 		}
 		else
 		{
@@ -1360,9 +1360,9 @@ void UJoltSubsystem::HandleLandscapeMeshes(const ALandscape* LandscapeActor)
 	}
 
 	// ULandscapeSplineSegment::GetLocalMeshComponents() is not exported with LANDSCAPE_API,
-	// So, this hacky way to using reflection works for now 
+	// So, this hacky way to using reflection works for now
 	static const FName LocalMeshComponentsName(TEXT("LocalMeshComponents"));
-	FArrayProperty* localMeshesProp = FindFProperty<FArrayProperty>(
+	FArrayProperty*	   localMeshesProp = FindFProperty<FArrayProperty>(
 		ULandscapeSplineSegment::StaticClass(), LocalMeshComponentsName);
 	if (localMeshesProp == nullptr)
 	{
@@ -1382,7 +1382,7 @@ void UJoltSubsystem::HandleLandscapeMeshes(const ALandscape* LandscapeActor)
 		FScriptArrayHelper arrayHelper(localMeshesProp, localMeshesProp->ContainerPtrToValuePtr<void>(splineSegment));
 		for (int32 i = 0; i < arrayHelper.Num(); ++i)
 		{
-			UObject* element = *reinterpret_cast<UObject**>(arrayHelper.GetRawPtr(i));
+			UObject*					element = *reinterpret_cast<UObject**>(arrayHelper.GetRawPtr(i));
 			const USplineMeshComponent* splineMesh = Cast<USplineMeshComponent>(element);
 			if (splineMesh == nullptr || splineMesh->GetBodySetup() == nullptr)
 			{
@@ -1579,7 +1579,6 @@ void UJoltSubsystem::JoltSetPhysicsRotation(const int64& bodyID, const FQuat& ro
 {
 	GetBodyInterface()->SetRotation(JPH::BodyID(bodyID), JoltHelpers::ToJoltRot(rotationWS), JPH::EActivation::Activate);
 }
-
 
 int32 UJoltSubsystem::GetObjectLayerByName(FName LayerName) const
 {
